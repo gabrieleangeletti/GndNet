@@ -19,6 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
+from sklearn import preprocessing
 
 
 # from modules import gnd_est_Loss
@@ -93,7 +94,7 @@ if args.visualize:
 
 
 
-model = GroundEstimatorNet(cfg).cuda()
+model = GroundEstimatorNet(cfg) # .cuda()
 optimizer = optim.SGD(model.parameters(), lr=cfg.lr, momentum=0.9, weight_decay=0.0005)
 
 
@@ -145,15 +146,16 @@ def get_target_gnd(cloud, sem_label):
 
 def InferGround(cloud):
 
-    cloud = _shift_cloud(cloud[:,:4], cfg.lidar_height)
+    cloud = _shift_cloud(cloud[:,:4], np.abs(np.mean(cloud[:, 2])) + 0.8)  #  cfg.lidar_height)
 
     voxels, coors, num_points = points_to_voxel(cloud, cfg.voxel_size, cfg.pc_range, cfg.max_points_voxel, True, cfg.max_voxels)
-    voxels = torch.from_numpy(voxels).float().cuda()
+    voxels = torch.from_numpy(voxels).float() # .cuda()
     coors = torch.from_numpy(coors)
-    coors = F.pad(coors, (1,0), 'constant', 0).float().cuda()
-    num_points = torch.from_numpy(num_points).float().cuda()
+    coors = F.pad(coors, (1,0), 'constant', 0).float() # .cuda()
+    num_points = torch.from_numpy(num_points).float() # .cuda()
     with torch.no_grad():
-            output = model(voxels, coors, num_points)
+        print(voxels.shape, coors.shape, num_points)
+        output = model(voxels, coors, num_points)
     return output
 
 
@@ -163,78 +165,98 @@ def InferGround(cloud):
 #     fig = plt.figure()
 
 def evaluate_SemanticKITTI(data_dir):
+    path = data_dir
+    points_3 = np.load(path).reshape(-1, 3)
+    points = np.ones((points_3.shape[0], 4))
+    points[:,:3] = points_3
+    points = points - np.max(points, axis=0)
 
-    velodyne_dir = data_dir + "velodyne/"
-    label_dir = data_dir + 'labels/'
-    frames = os.listdir(velodyne_dir)
-    # calibration = parse_calibration(os.path.join(data_dir, "calib.txt"))
-    # poses = parse_poses(os.path.join(data_dir, "poses.txt"), calibration)
-    # rate = rospy.Rate(2) # 10hz
-    # angle = 0
-    # increase = True
-    iou_score = 0
-    mse_score = 0
-    prec_score = 0
-    recall_score = 0
-    print(len(frames))
-    for f in range(len(frames)):
-        points_path = os.path.join(velodyne_dir, "%06d.bin" % f)
-        points = np.fromfile(points_path, dtype=np.float32).reshape(-1, 4)
+    print(np.abs(np.mean(points[:, 2])))
 
-        label_path = os.path.join(label_dir, "%06d.label" % f)
-        sem_label = np.fromfile(label_path, dtype=np.uint32)
-        sem_label = sem_label.reshape((-1))
+    pred_gnd = InferGround(points)
+    pred_gnd = pred_gnd.cpu().numpy()
 
-        pred_gnd = InferGround(points)
-        pred_gnd = pred_gnd.cpu().numpy()
-        # TODO: Remove the points which are very below the ground
-        pred_GndSeg = segment_cloud(points.copy(),np.asarray(cfg.grid_range), cfg.voxel_size[0], elevation_map = pred_gnd.T, threshold = 0.2)
-        GndSeg = get_GndSeg(sem_label, GndClasses = [40, 44, 48, 49,60,72])
+    # TODO: Remove the points which are very below the ground
+    pred_GndSeg = segment_cloud(points.copy(),np.asarray(cfg.grid_range), cfg.voxel_size[0], elevation_map = pred_gnd.T, threshold = 0.2)
+    print(f"total points:{pred_GndSeg.shape[0]}")
+    print(f"ground points:{np.sum(pred_GndSeg == 0)}")
+    print(f"non-ground points:{np.sum(pred_GndSeg == 1)}")
+    print(f"outside range points:{np.sum(pred_GndSeg == -1)}")
+
+    print("saving ground points indices.")
+    np.save("data/larki/out.npy", np.where(pred_GndSeg == 0)[0])
+
+    # velodyne_dir = data_dir + "velodyne/"
+    # label_dir = data_dir + 'labels/'
+    # frames = os.listdir(velodyne_dir)
+    # # calibration = parse_calibration(os.path.join(data_dir, "calib.txt"))
+    # # poses = parse_poses(os.path.join(data_dir, "poses.txt"), calibration)
+    # # rate = rospy.Rate(2) # 10hz
+    # # angle = 0
+    # # increase = True
+    # iou_score = 0
+    # mse_score = 0
+    # prec_score = 0
+    # recall_score = 0
+    # print(len(frames))
+    # for f in range(len(frames)):
+    #     points_path = os.path.join(velodyne_dir, "%06d.bin" % f)
+    #     points = np.fromfile(points_path, dtype=np.float32).reshape(-1, 4)
+
+    #     label_path = os.path.join(label_dir, "%06d.label" % f)
+    #     sem_label = np.fromfile(label_path, dtype=np.uint32)
+    #     sem_label = sem_label.reshape((-1))
+
+    #     pred_gnd = InferGround(points)
+    #     pred_gnd = pred_gnd.cpu().numpy()
+    #     # TODO: Remove the points which are very below the ground
+    #     pred_GndSeg = segment_cloud(points.copy(),np.asarray(cfg.grid_range), cfg.voxel_size[0], elevation_map = pred_gnd.T, threshold = 0.2)
+    #     GndSeg = get_GndSeg(sem_label, GndClasses = [40, 44, 48, 49,60,72])
         
-        if args.visualize:
-            np2ros_pub_2(points, pcl_pub, None, pred_GndSeg)
-            if args.visualize_gnd:
-                gnd_marker_pub(pred_gnd, marker_pub_2, cfg, color = "red")
-            # pdb.set_trace()
+    #     if args.visualize:
+    #         np2ros_pub_2(points, pcl_pub, None, pred_GndSeg)
+    #         if args.visualize_gnd:
+    #             gnd_marker_pub(pred_gnd, marker_pub_2, cfg, color = "red")
+    #         # pdb.set_trace()
 
-        pred_GndSeg, GndSeg = remove_outliers(pred_GndSeg, GndSeg)
-        intersection = np.logical_and(GndSeg, pred_GndSeg)
-        union = np.logical_or(GndSeg, pred_GndSeg)
-        iou = np.sum(intersection) / np.sum(union)
-        prec = np.sum(intersection)/pred_GndSeg.sum()
-        recall = np.sum(intersection)/GndSeg.sum()
-        # tn =   np.count_nonzero(pred_GndSeg==0) - np.sum(intersection)
-        # iou = np.count_nonzero(pred_GndSeg==0)/(np.count_nonzero(GndSeg==0)+tn)
-        iou_score += iou
-        prec_score += prec
-        recall_score += recall
+    #     pred_GndSeg, GndSeg = remove_outliers(pred_GndSeg, GndSeg)
+    #     intersection = np.logical_and(GndSeg, pred_GndSeg)
+    #     union = np.logical_or(GndSeg, pred_GndSeg)
+    #     iou = np.sum(intersection) / np.sum(union)
+    #     prec = np.sum(intersection)/pred_GndSeg.sum()
+    #     recall = np.sum(intersection)/GndSeg.sum()
+    #     # tn =   np.count_nonzero(pred_GndSeg==0) - np.sum(intersection)
+    #     # iou = np.count_nonzero(pred_GndSeg==0)/(np.count_nonzero(GndSeg==0)+tn)
+    #     iou_score += iou
+    #     prec_score += prec
+    #     recall_score += recall
 
 
 
-        target_gnd, gnd_mask = get_target_gnd(points, sem_label)
-        # if args.visualize: 
-            # fig.clear()
-            # fig.add_subplot(1, 3, 1)
-            # plt.imshow(gnd_mask, interpolation='nearest')
-            # fig.add_subplot(1, 3, 2)
-            # cs = plt.imshow(target_gnd*gnd_mask, interpolation='nearest')
-            # cbar = fig.colorbar(cs)
-            # fig.add_subplot(1, 3, 3)
-            # cs = plt.imshow(pred_gnd.T*gnd_mask, interpolation='nearest')
-            # cbar = fig.colorbar(cs)
-            # plt.show()
+    #     target_gnd, gnd_mask = get_target_gnd(points, sem_label)
+    #     # if args.visualize: 
+    #         # fig.clear()
+    #         # fig.add_subplot(1, 3, 1)
+    #         # plt.imshow(gnd_mask, interpolation='nearest')
+    #         # fig.add_subplot(1, 3, 2)
+    #         # cs = plt.imshow(target_gnd*gnd_mask, interpolation='nearest')
+    #         # cbar = fig.colorbar(cs)
+    #         # fig.add_subplot(1, 3, 3)
+    #         # cs = plt.imshow(pred_gnd.T*gnd_mask, interpolation='nearest')
+    #         # cbar = fig.colorbar(cs)
+    #         # plt.show()
 
-        mse = (np.square(target_gnd - pred_gnd.T)*gnd_mask).sum()
-        mse = mse/gnd_mask.sum()
-        mse_score += mse
+    #     mse = (np.square(target_gnd - pred_gnd.T)*gnd_mask).sum()
+    #     mse = mse/gnd_mask.sum()
+    #     mse_score += mse
 
-        print(f, iou, mse, prec, recall)
+    #     print(f, iou, mse, prec, recall)
 
-    iou_score = iou_score/len(frames)
-    mse_score = mse_score/len(frames)
-    recall_score = recall_score/len(frames)
-    prec_score = prec_score/len(frames)
-    print(iou_score, mse_score, prec_score, recall_score)
+    # iou_score = iou_score/len(frames)
+    # mse_score = mse_score/len(frames)
+    # recall_score = recall_score/len(frames)
+    # prec_score = prec_score/len(frames)
+    # print(iou_score, mse_score, prec_score, recall_score)
 
 
 
@@ -249,7 +271,7 @@ def main():
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
+            checkpoint = torch.load(args.resume, map_location="cpu")
             args.start_epoch = checkpoint['epoch']
             lowest_loss = checkpoint['lowest_loss']
             model.load_state_dict(checkpoint['state_dict'])
